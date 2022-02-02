@@ -140,6 +140,7 @@ def check_downloaded(path: str, file_name: str):
                 return True
             time.sleep(1)
             count += 1
+        return False
     except:
         return False
 
@@ -149,6 +150,7 @@ def table_actions(path, table):
         uii = table["UII"][i]
         try:
             link = browser.find_element(locator="link:{}".format(uii))
+            print("Processing UII: {}".format(uii))
             # find link
             download_pdf(link)
             # download pdf
@@ -161,6 +163,7 @@ def table_actions(path, table):
                     print("Error. Values 'UII' and 'Investment Title' are not the same.")
 
             else:
+                print("File was not downloaded.")
                 continue
 
         except:
