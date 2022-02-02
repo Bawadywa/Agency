@@ -1,5 +1,7 @@
 # +
 import datetime
+import time
+
 import pandas as pd
 import re
 import PyPDF2
@@ -10,11 +12,12 @@ from RPA.JSON import JSON
 
 browser = Selenium()
 
-main_url = "https://itdashboard.gov/"
-excel_name = "Report.xlsx"
+MAIN_URL = "https://itdashboard.gov/"
+EXCEL_NAME = "Report.xlsx"
 
 
-agency_name = JSON().load_json_from_file("devdata/env.json")["agency_name"]
+AGENCY_NAME = JSON().load_json_from_file("devdata/env.json")["agency_name"]
+FILE_SYSTEM = FileSystem()
 
 
 def open_url(url: str):
@@ -24,7 +27,8 @@ def open_url(url: str):
 
 def dive_in():
     browser.click_link("#home-dive-in")
-    browser.wait_until_page_contains_element(locator="css:div#agency-tiles-widget span")
+    browser.wait_until_page_contains_element(locator="css:div#agency-tiles-widget span",
+                                             timeout=datetime.timedelta(seconds=20))
     # wait until agencies table appears on the page
 
 
@@ -74,93 +78,112 @@ def show_all_entries():
 
 def html_table_to_excel(workbook_path: str, worksheet_name: str):
     data = pd.read_html(browser.get_source(), match="UII")
+    table = data[1]
     with pd.ExcelWriter(workbook_path, engine="openpyxl", mode="a") as writer:
-        data[1].to_excel(writer, worksheet_name, index=False)
+        table.to_excel(writer, worksheet_name, index=False)
+
+    return table
 
 
-def get_investments_links() -> list:
-    table = browser.find_element(locator="id:investments-table-object")
-    links = browser.find_elements(locator="tag:a", parent=table)
-    return links
-
-
-def download_pdf(links: list):
-    for link in links:
-        browser.click_link(link, "CTRL+ALT")
-        # click on UII and open webpage in new tab
-        browser.switch_window("NEW")
-        # switch to new tab
-        browser.wait_until_page_contains_element(locator="business-case-pdf")
-        pdf_link_parent = browser.find_element(locator="business-case-pdf")
-        pdf_link = browser.find_element(locator="tag:a", parent=pdf_link_parent)
-        browser.click_link(locator=pdf_link)
-        browser.wait_until_page_does_not_contain_element(locator="css:div#business-case-pdf span",
-                                                         timeout=datetime.timedelta(seconds=10))
-        # wait for pdf to generate
-        browser.switch_window("MAIN")
-        # switch to main tab
-        try:
-            browser.wait_until_page_does_not_contain_element(locator="id:main-content",
-                                                             timeout=datetime.timedelta(seconds=2))
-        except:
-            continue
-        # wait until file is downloaded
-
-
-def compare_pdfs_excel(path: str, workbook_path: str, worksheet_name: str):
-    pdf_files = FileSystem().find_files(path + r"*.pdf")
-    pdf_paths = list(map(lambda file: file.path, pdf_files))
+def compare_pdf(path: str, file_name: str, record):
     name_pattern, uii_pattern = r"(?<=1\. Name of this Investment:\n \n)[^\n]+",\
                                 r"(?<=2\. Unique Investment Identifier \(UII\):\n \n)[^\n]+"
-    pdf_data = []
-    for path in pdf_paths:
-        pdf_reader = PyPDF2.PdfFileReader(path)
-        text = pdf_reader.getPage(0).extractText()
-        match_name, match_uii = re.search(name_pattern, text), re.search(uii_pattern, text)
-        name, uii = "", ""
-        if match_name is not None:
-            name = match_name.group(0)
+    # using regexp for search
 
-        if match_uii is not None:
-            uii = match_uii.group(0)
-        pdf_data.append({"name": name, "uii": uii})
+    pdf_reader = PyPDF2.PdfFileReader("{}{}.pdf".format(path, file_name))
+    text = pdf_reader.getPage(0).extractText()
+    # getting text of the first page
+    match_name, match_uii = re.search(name_pattern, text), re.search(uii_pattern, text)
+    name, uii = "", ""
+    if match_name is not None:
+        name = match_name.group(0)
+    else:
+        return False
 
-    data_frame = pd.read_excel(workbook_path, worksheet_name)
-    pd.set_option("display.max_columns", 20)
-    records = list(data_frame.to_dict("records"))
+    if match_uii is not None:
+        uii = match_uii.group(0)
+    else:
+        return False
 
-    print("-"*5 + "{}".format("Comparing pdf and excel") + "-"*5)
-    record_index = 0
-    for record in records:
-        for index in range(len(pdf_data)):
-            if record["UII"] == pdf_data[index]["uii"] and record["Investment Title"] == pdf_data[index]["name"]:
-                print("Row Index = {}, Name of Investment: {}, UII: {}\n{}"
-                      .format(record_index + 2, *pdf_data[index].values(), record), end="\n\n")
-                pdf_data.remove(pdf_data[index])
-                break
-                # + 2 to show exact row index from excel
-        record_index += 1
+    print("-"*5 + "Comparing {}.pdf".format(file_name) + "-"*5)
+    if record["UII"] == uii and record["Investment Title"] == name:
+        print("Row Index = {}, UII: {}, Name of Investment: {}\n{}"
+              .format(record.name + 2, uii, name, record.to_dict()), end="\n\n")
+        return True
+        # + 2 to show exact row index from excel
+    return False
+
+
+def download_pdf(link: str):
+    browser.click_link(link, "CTRL+ALT")
+    # click on UII and open webpage in new tab
+    browser.switch_window("NEW")
+    # switch to new tab
+    browser.wait_until_page_contains_element(locator="business-case-pdf",
+                                             timeout=datetime.timedelta(seconds=10))
+    pdf_link_parent = browser.find_element(locator="business-case-pdf")
+    pdf_link = browser.find_element(locator="tag:a", parent=pdf_link_parent)
+    browser.click_link(locator=pdf_link)
+    # download pdf
+    browser.wait_until_page_does_not_contain_element(locator="css:div#business-case-pdf span",
+                                                     timeout=datetime.timedelta(seconds=15))
+    # wait for pdf to generate
+    browser.switch_window("MAIN")
+    # switch to main tab
+
+
+def check_downloaded(path: str, file_name: str):
+    try:
+        timeout, count = 10, 1
+        while count < timeout:
+            if FILE_SYSTEM.does_file_exist(path="{}{}.pdf".format(path, file_name)):
+                return True
+            time.sleep(1)
+            count += 1
+    except:
+        return False
+
+
+def table_actions(path, table):
+    for i in range(len(table)):
+        uii = table["UII"][i]
+        try:
+            link = browser.find_element(locator="link:{}".format(uii))
+            # find link
+            download_pdf(link)
+            # download pdf
+            flag_download = check_downloaded(path, uii)
+            # check if downloaded
+            if flag_download:
+                flag_compare = compare_pdf(path, uii, table.loc[i])
+                # check compare
+                if not flag_compare:
+                    print("Error. Values 'UII' and 'Investment Title' are not the same.")
+
+            else:
+                continue
+
+        except:
+            break
 
 
 def delete_pdfs(path: str):
-    FileSystem().remove_files(*list(map(lambda file: file.path,
-                                        FileSystem().find_files(path + "*.pdf"))))
+    FILE_SYSTEM.remove_files(*list(map(lambda file: file.path,
+                                       FILE_SYSTEM.find_files(path + "*.pdf"))))
 
 
 def first_page(path: str):
-    open_url(main_url)
+    open_url(MAIN_URL)
     dive_in()
-    fill_excel_agencies(workbook_path=r"{}{}".format(path, excel_name),
+    fill_excel_agencies(workbook_path=r"{}{}".format(path, EXCEL_NAME),
                         data=get_agencies())
 
 
 def second_page(path: str):
-    open_agency(agency_name)
+    open_agency(AGENCY_NAME)
     show_all_entries()
-    html_table_to_excel(r"{}{}".format(path, excel_name), agency_name)
-    download_pdf(links=get_investments_links())
-    compare_pdfs_excel(path=path, workbook_path=r"{}{}".format(path, excel_name),
-                       worksheet_name=agency_name)
+    table = html_table_to_excel(r"{}{}".format(path, EXCEL_NAME), AGENCY_NAME)
+    table_actions(path, table)
 
 
 def main(path: str):
@@ -171,3 +194,4 @@ def main(path: str):
         second_page(path)
     finally:
         browser.close_all_browsers()
+
